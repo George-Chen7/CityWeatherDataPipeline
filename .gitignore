@@ -1,0 +1,31 @@
+# 环境与密钥
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 数据（原始与中间产物不入库，保留目录结构用 .gitkeep）
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# 日志与编辑器
+logs/
+*.log
+.vscode/
+.idea/
+
+# 虚拟环境/系统文件
+.DS_Store
+Thumbs.db
+
+note.md
+schedule.md
