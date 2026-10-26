@@ -18,11 +18,20 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
+# Airflow 运行时生成物（config 内含 secret_key / jwt_secret，绝不能提交）
+deploy/airflow/config/*
+!deploy/airflow/config/.gitkeep
+deploy/airflow/plugins/*
+!deploy/airflow/plugins/.gitkeep
+
 # 日志与编辑器
 logs/
 *.log
 .vscode/
 .idea/
+
+# 本地临时验证目录
+.tmp/
 
 # 虚拟环境/系统文件
 .DS_Store

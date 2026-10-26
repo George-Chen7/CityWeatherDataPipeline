@@ -1,4 +1,8 @@
-requests>=2.31,<3
-psycopg[binary]>=3.1,<4
-python-dotenv>=1.0,<2
-tzdata>=2024.1; sys_platform == "win32"
+# 运行时依赖：精确固定版本，保证宿主机、ETL 镜像、Airflow 镜像解析到同一组版本。
+# 升级流程：修改版本 -> 重建两个镜像 -> 跑 tests/ 与一次 --from-raw 回放 -> 更新 README。
+requests==2.34.2
+psycopg[binary]==3.3.6
+python-dotenv==1.2.4
+
+# Linux 容器已有系统 tzdata；Windows 宿主机需要这个包提供 zoneinfo 数据。
+tzdata==2026.5; sys_platform == "win32"

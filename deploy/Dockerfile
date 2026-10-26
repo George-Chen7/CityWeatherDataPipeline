@@ -3,11 +3,15 @@
 #
 # 目的不是“把整个项目塞进镜像”，而是提供一个和 PostgreSQL 同网络的
 # 客户端容器，用来验证：容器内用服务名 postgres + 5432 连接数据库。
-FROM python:3.12-slim
+#
+# 版本固定：Python 补丁版本 + Debian 代号都写死，避免 :slim 随上游漂移。
+# 升级时同步修改这里和 README 的版本表。
+FROM python:3.12.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=Asia/Shanghai
 
 # zoneinfo 依赖系统时区数据库；slim 镜像默认没有 /usr/share/zoneinfo。

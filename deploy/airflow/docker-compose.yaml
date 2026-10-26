@@ -46,25 +46,30 @@
 ---
 x-airflow-common:
   &airflow-common
-  # In order to add custom dependencies or upgrade provider distributions you can use your extended image.
-  # Comment the image line, place your Dockerfile in the directory where you placed the docker-compose.yaml
-  # and uncomment the "build" line below, Then run `docker-compose build` to build the images.
-  image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.3.2}
-  # build: .
+  # 项目镜像：基于官方 3.3.2，只额外安装 src/ 需要的 Python 依赖。
+  # 版本固定策略见 deploy/airflow/Dockerfile 与 README。
+  image: ${AIRFLOW_IMAGE_NAME:-city-weather-airflow:3.3.2}
+  build:
+    context: ../..
+    dockerfile: deploy/airflow/Dockerfile
   env_file:
     - ${ENV_FILE_PATH:-.env}
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # 元数据库账号也走 .env；密码只要求字母数字，避免 URL 编码问题。
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD is required}@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD is required}@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
-    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY}
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:?FERNET_KEY is required}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-    AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
+    # 示例 DAG 与天气业务无关；干净环境默认关闭。
+    # 旧元数据卷如果曾以 true 加载过示例，直接改 false 会让 serialized_dag
+    # 里残留的示例 DAG 反序列化失败；升级说明见 deploy/README.md。
+    AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES:-false}'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
-    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:?AIRFLOW__API_AUTH__JWT_SECRET is required}
     AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
@@ -76,11 +81,18 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # 项目代码不在 Airflow 默认镜像里，挂载后用这个 PYTHONPATH 导入 src
+    # 放在 /opt/project 而不是 /opt/airflow 下，避免 airflow-init 的 chown -R 改到宿主机源码
+    PYTHONPATH: '/opt/project:/opt/airflow'
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    # 路径必须和 src/config.py 的 BASE_DIR 对齐：/opt/project
+    - ../../src:/opt/project/src:ro
+    - ../../sql:/opt/project/sql:ro
+    - ../../data:/opt/project/data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -91,18 +103,19 @@ x-airflow-common:
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16.6
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
+      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD is required}
       POSTGRES_DB: airflow
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
+      timeout: 5s
       retries: 5
-      start_period: 5s
+      start_period: 10s
     restart: always
 
   redis:
@@ -123,7 +136,7 @@ services:
     <<: *airflow-common
     command: api-server
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_WEB_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
       interval: 30s
@@ -181,6 +194,16 @@ services:
       # Required to handle warm shutdown of the celery workers properly
       # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: "0"
+      # 天气业务库：容器网络内用唯一容器名 + 5432，避免和元数据库 postgres 冲突。
+      # 这些变量必须指向 deploy/docker-compose.yaml 启动的天气库。
+      PGHOST: ${WEATHER_DB_HOST:?WEATHER_DB_HOST is required}
+      PGPORT: ${WEATHER_DB_PORT:?WEATHER_DB_PORT is required}
+      PGDATABASE: ${WEATHER_DB_NAME:?WEATHER_DB_NAME is required}
+      PGUSER: ${WEATHER_DB_USER:?WEATHER_DB_USER is required}
+      PGPASSWORD: ${WEATHER_DB_PASSWORD:?WEATHER_DB_PASSWORD is required}
+    networks:
+      - default
+      - weather
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -292,7 +315,7 @@ services:
       _AIRFLOW_DB_MIGRATE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
-      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:?_AIRFLOW_WWW_USER_PASSWORD is required}
       _PIP_ADDITIONAL_REQUIREMENTS: ''
     user: "0:0"
 
@@ -303,6 +326,14 @@ services:
     environment:
       <<: *airflow-common-env
       CONNECTION_CHECK_MAX_COUNT: "0"
+      PGHOST: ${WEATHER_DB_HOST:?WEATHER_DB_HOST is required}
+      PGPORT: ${WEATHER_DB_PORT:?WEATHER_DB_PORT is required}
+      PGDATABASE: ${WEATHER_DB_NAME:?WEATHER_DB_NAME is required}
+      PGUSER: ${WEATHER_DB_USER:?WEATHER_DB_USER is required}
+      PGPASSWORD: ${WEATHER_DB_PASSWORD:?WEATHER_DB_PASSWORD is required}
+    networks:
+      - default
+      - weather
     # Workaround for entrypoint issue. See: https://github.com/apache/airflow/issues/16252
     command:
       - bash
@@ -335,3 +366,10 @@ services:
 
 volumes:
   postgres-db-volume:
+
+networks:
+  # 由 deploy/docker-compose.yaml 创建，Airflow 只加入，不负责创建/删除。
+  # 先在 deploy/ 启动天气库；清理测试环境时可用 WEATHER_DOCKER_NETWORK 覆盖。
+  weather:
+    external: true
+    name: ${WEATHER_DOCKER_NETWORK:-city-weather-stage2_default}
