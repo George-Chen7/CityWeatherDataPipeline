@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!**/.env.example
 
 # Python
 .venv/
@@ -29,3 +30,4 @@ Thumbs.db
 
 note.md
 schedule.md
+AGENTS.md

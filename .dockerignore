@@ -1,0 +1,17 @@
+# Docker 构建上下文是仓库根目录：排除无关文件和密钥。
+# 密钥只通过运行时环境变量注入，不进入镜像层。
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.py[cod]
+.env
+**/.env
+.env.*
+!.env.example
+data
+logs
+note.md
+schedule.md
+AGENTS.md
+README.md

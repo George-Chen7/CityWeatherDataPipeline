@@ -1,0 +1,80 @@
+# 阶段二：城市天气数据管道 —— 基础设施编排
+# 任务 01：PostgreSQL（端口映射、命名卷、健康检查）。
+# 任务 02：etl 应用容器（验证服务名/容器端口/环境变量）。
+# 任务 03 再接入 Airflow。
+#
+# 用法（在本目录下执行）：
+#   docker compose up -d
+#   docker compose ps
+#   docker compose run --rm etl python -c "..."   # 一次性客户端容器
+#   docker compose down          # 停止但保留数据卷
+#   docker compose down -v       # 连数据卷一起删除（会丢数据）
+
+name: city-weather-stage2
+
+services:
+  postgres:
+    image: postgres:16.6          # 固定小版本，避免 :latest 漂移
+    container_name: weather-pg-stage2
+    restart: unless-stopped
+
+    environment:
+      # 全部来自 .env，代码与 compose 文件里不出现真实密码
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      TZ: ${TZ:-Asia/Shanghai}
+      PGTZ: ${TZ:-Asia/Shanghai}
+
+    ports:
+      # 宿主机端口 : 容器端口（容器内 PostgreSQL 永远监听 5432）
+      # 用 5433 与阶段一本地库隔离，避免撞端口
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+
+    volumes:
+      # 命名卷：数据存在卷里而不是容器可写层，容器删除/重建后仍在
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      # $$ 是 compose 转义，交给容器内 shell 展开
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s          # 首次初始化数据库需要时间，先给宽限期
+
+  # ---------------------------------------------------------------- 应用容器
+  # 用同一份 src/ 代码验证两种连接方式：
+  #   容器内：PGHOST=postgres   PGPORT=5432  （服务名 + 容器端口）
+  #   宿主机：PGHOST=127.0.0.1  PGPORT=5433  （端口映射后的宿主机端口）
+  # profiles 让普通 `up -d` 不会启动它，只有 `run --rm etl ...` 才用。
+  etl:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: city-weather-etl:stage2
+    profiles: ["etl"]
+
+    depends_on:
+      postgres:
+        condition: service_healthy   # 健康检查通过后才启动，避免抢跑
+
+    environment:
+      # 密钥不写进镜像/代码，只在运行时注入
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGCONNECT_TIMEOUT: "5"
+      TZ: ${TZ:-Asia/Shanghai}
+
+    volumes:
+      # 开发期挂载源码：改 .py 不用重建镜像；只有依赖变化才需要 build
+      - ../src:/app/src
+      - ../sql:/app/sql
+      - ../data:/app/data
+
+volumes:
+  pgdata:
+    name: city-weather-stage2-pgdata   # 显式命名，便于跨 compose 项目识别与备份
